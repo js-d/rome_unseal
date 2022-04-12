@@ -31,12 +31,12 @@ def prepare_input(
     return encoded_text, correct_id
 
 
-def get_noise_hook():
+def get_noise_hook(token_limit):
     # unseal has a hook to add gaussian noise on the output of any module
     mean = 0
     std = 0.1
     embedding_name = "transformer->wte"  # name of the embedding module
-    entity_indices = "0:4"  # add noise to the first 4 token embeddings, which are the subject in our case
+    entity_indices = f"0:{token_limit}"  # add noise to the first 4 token embeddings, which are the subject in our case
     noise_hook = Hook(
         layer_name=embedding_name,
         func=unseal.hooks.common_hooks.additive_output_noise( # TODO: had to change rome_hooks to common_hooks here (rome_hooks is deprecated)
@@ -73,14 +73,14 @@ def compute_trace(model, hidden_states, encoded_text, correct_id, noise_hook, nu
     return results
 
 
-def save_trace_plot(results, save_path):
+def save_trace_plot(results, list_tokens, save_path):
     num_tokens, num_layers = results.shape[0], results.shape[1]
     fig, ax = plt.subplots(figsize=(10, 6))
 
     image = ax.pcolormesh(results, cmap="Purples")
     # TODO: change the labelling here
     ax.set_yticks(
-        np.arange(num_tokens) + 0.5, ["The", "Big", "Bang", "Theory", "premie", "res", "on"]
+        np.arange(num_tokens) + 0.5, list_tokens
     )
     ax.set_xticks(np.arange(0, num_layers, 5) + 0.5, np.arange(0, num_layers, 5))
     cbar = plt.colorbar(image)
@@ -89,12 +89,13 @@ def save_trace_plot(results, save_path):
     fig.savefig(save_path)
 
 
-def main(model, text, path):
+def main(model, tokenizer, text, token_limit, path, device):
     
 
     # prepare text input
     encoded_text, correct_id = prepare_input(text, tokenizer, device)
-    num_tokens = encoded_text["input_ids"].shape[1]
+    list_tokens = tokenizer.convert_ids_to_tokens(encoded_text['input_ids'][0], skip_special_tokens=True)
+    num_tokens =  len(list_tokens)
 
     # prediction in the uncorrupted run:
     print(
@@ -114,7 +115,7 @@ def main(model, text, path):
     ]
 
     # implement the corruption noise
-    noise_hook = get_noise_hook()
+    noise_hook = get_noise_hook(token_limit)
 
     # prediction in the corrupted run
     print(
@@ -126,13 +127,14 @@ def main(model, text, path):
     results = compute_trace(model, hidden_states, encoded_text, correct_id, noise_hook, num_layers, num_tokens)
 
     # save figure
-    save_trace_plot(results, path)
+    save_trace_plot(results, list_tokens, path)
 
 
 if __name__ == "__main__":
     model_name = "gpt2-large"
     text_list = ["The Big Bang Theory premieres on CBS"]
-    
+    token_limit_list = [4] # index of last token to perturb
+
     # let's load the model
     unhooked_model, tokenizer, config = load_from_pretrained(model_name)
 
@@ -143,13 +145,16 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
-    print(f"Model loaded and on device {device}!")
-
     # create a path to save traces for this model
     model_path = Path("traces", model_name)
     os.makedirs(model_path, exist_ok=True)
 
+    print(f"Model loaded and on device {device}, path created!")
+
     # get trace for every text in text list
-    for (text_idx, text) in enumerate(text_list):
+    for text_idx in range(len(text_list)):
+        text = text_list[text_idx]
+        token_limit = token_limit_list[text_idx]
+        
         path = model_path / Path(f"{text_idx}.png")
-        main(model, text, path)
+        main(model, tokenizer, text, token_limit, path, device)
